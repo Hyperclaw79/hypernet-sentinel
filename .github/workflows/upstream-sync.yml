@@ -1,0 +1,142 @@
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: hypernet-sentinel-upstream-sync-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  DOCKER_BUILD_SUMMARY: "false"
+
+jobs:
+  sync:
+    name: Required / Validate and commit upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+
+      - name: Refresh selected upstream source
+        id: update
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/sentinel-server/Cargo.toml | head -n1)"
+          test -n "$version"
+          {
+            echo "base=$(git rev-parse HEAD)"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          python3 scripts/update_upstream.py
+          echo "revision=$(tr -d '\r\n' < crates/measurement-core/UPSTREAM_REVISION)" >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run full locked validation
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+          cargo test --workspace --locked
+          git diff --check
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build production image from refreshed source
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          load: true
+          cache-from: type=gha,scope=hypernet-sentinel-upstream-sync
+          cache-to: type=gha,mode=max,scope=hypernet-sentinel-upstream-sync
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.update.outputs.version }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+            UPSTREAM_REVISION=${{ steps.update.outputs.revision }}
+          tags: hypernet-sentinel:upstream-validation
+
+      - name: Smoke-test refreshed production image
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=hypernet-sentinel-upstream-ci
+          volume=hypernet-sentinel-upstream-ci-data
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" --read-only --tmpfs /tmp --cap-drop ALL \
+            -e SENTINEL_SCHEDULER_ENABLED=false -v "$volume:/data" -p 18081:8080 \
+            hypernet-sentinel:upstream-validation >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18081/healthz >/dev/null; then break; fi
+            if [ "$attempt" -eq 30 ]; then docker logs "$container"; exit 1; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18081/ | grep -q "Run all tests"
+
+      - name: Commit directly after validation
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "hypernet-sentinel-updater[bot]"
+          git config user.email "hypernet-sentinel-updater[bot]@users.noreply.github.com"
+          git add crates/measurement-core/UPSTREAM_REVISION crates/measurement-core/src/upstream
+          git commit -m "chore(measurement): sync upstream ${{ steps.update.outputs.revision }}"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "${{ steps.update.outputs.base }}" || {
+            echo "main advanced during validation; refusing to overwrite or reconcile" >&2
+            exit 1
+          }
+          git push origin HEAD:main
+
+      - name: Dispatch immutable build for updated main
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/dispatches" \
+            --data '{"ref":"main"}'

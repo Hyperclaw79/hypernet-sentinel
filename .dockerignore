@@ -1,0 +1,9 @@
+.git
+.github
+target
+data
+*.db
+screenshots
+docs
+scripts
+compose.example.yaml

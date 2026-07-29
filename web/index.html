@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#07110f" />
+    <title>Hypernet Sentinel</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230b211c'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2367e8b7'/%3E%3Cpath d='M5 19c6-11 13-13 22-12' fill='none' stroke='%2367e8b7' stroke-width='2'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/styles/app.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="topbar">
+        <a class="identity" href="/" aria-label="Hypernet Sentinel home">
+          <span class="mark" aria-hidden="true"><span></span></span>
+          <span><strong>Hypernet</strong><small>Sentinel</small></span>
+        </a>
+        <div class="header-status">
+          <span id="status-pill" class="status-pill loading"
+            ><i></i><span>Connecting</span></span
+          >
+          <span class="last-test"
+            ><span>Last completed</span
+            ><strong id="last-completed">—</strong></span
+          >
+        </div>
+        <div class="run-control">
+          <button id="run-button" class="run-button" type="button">
+            <span class="run-icon" aria-hidden="true">↗</span
+            ><span>Run all tests</span>
+          </button>
+          <button
+            id="run-options-button"
+            class="run-options-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="run-options"
+            aria-label="Choose diagnostics"
+          >
+            ⌄
+          </button>
+          <div id="run-options" class="run-options" hidden>
+            <div>
+              <strong>Manual diagnostic</strong
+              ><button id="select-all-tests" type="button">Select all</button>
+            </div>
+            <label
+              ><input
+                type="checkbox"
+                name="diagnostic"
+                value="latency"
+                checked
+              /><span
+                ><strong>Latency &amp; jitter</strong
+                ><small>Idle HTTP responsiveness</small></span
+              ></label
+            >
+            <label
+              ><input
+                type="checkbox"
+                name="diagnostic"
+                value="download"
+                checked
+              /><span
+                ><strong>Download</strong
+                ><small>Throughput + loaded latency</small></span
+              ></label
+            >
+            <label
+              ><input
+                type="checkbox"
+                name="diagnostic"
+                value="upload"
+                checked
+              /><span
+                ><strong>Upload</strong
+                ><small>Throughput + loaded latency</small></span
+              ></label
+            >
+            <label
+              ><input
+                type="checkbox"
+                name="diagnostic"
+                value="packet_loss"
+                checked
+              /><span
+                ><strong>UDP packet loss</strong
+                ><small>Experimental Cloudflare TURN probe</small></span
+              ></label
+            >
+            <p>
+              Bufferbloat needs latency plus download or upload to calculate
+              added latency.
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <section
+        id="running-panel"
+        class="running-panel"
+        aria-live="polite"
+        hidden
+      >
+        <div class="radar"><i></i><span></span></div>
+        <div>
+          <p>Diagnostic in progress</p>
+          <strong id="running-phase">Preparing measurement</strong>
+        </div>
+        <div class="running-time">
+          <span>Elapsed</span><strong id="elapsed">00:00</strong>
+        </div>
+        <div class="progress-track"><i></i></div>
+      </section>
+
+      <section class="intro">
+        <div>
+          <p class="eyebrow">Connection overview</p>
+          <h1>Your internet, measured over time.</h1>
+        </div>
+        <p>
+          Scheduled diagnostics against Cloudflare infrastructure, with every
+          result retained locally.
+        </p>
+      </section>
+
+      <section class="summary-grid" aria-label="Latest measurements">
+        <article class="metric-card download">
+          <div class="metric-head"><span>Download</span><i>↓</i></div>
+          <strong id="metric-download">—</strong
+          ><small>Mbps · Cloudflare edge</small>
+          <div class="spark"><span></span></div>
+        </article>
+        <article class="metric-card upload">
+          <div class="metric-head"><span>Upload</span><i>↑</i></div>
+          <strong id="metric-upload">—</strong
+          ><small>Mbps · Cloudflare edge</small>
+          <div class="spark"><span></span></div>
+        </article>
+        <article class="metric-card latency">
+          <div class="metric-head"><span>HTTP latency</span><i>⌁</i></div>
+          <strong id="metric-latency">—</strong
+          ><small>ms · speed.cloudflare.com</small>
+          <div class="spark"><span></span></div>
+        </article>
+        <article class="metric-card jitter">
+          <div class="metric-head"><span>Jitter</span><i>≈</i></div>
+          <strong id="metric-jitter">—</strong
+          ><small>ms · idle latency variation</small>
+          <div class="spark"><span></span></div>
+        </article>
+        <article class="metric-card bufferbloat">
+          <div class="metric-head"><span>Bufferbloat</span><i>↝</i></div>
+          <strong id="metric-bufferbloat">—</strong
+          ><small id="bufferbloat-detail"
+            >ms · worst added loaded latency</small
+          >
+          <div class="spark"><span></span></div>
+        </article>
+        <article class="metric-card loss">
+          <div class="metric-head"><span>UDP packet loss</span><i>◇</i></div>
+          <strong id="metric-loss">—</strong><small>% · Cloudflare TURN</small>
+          <div class="spark"><span></span></div>
+        </article>
+      </section>
+
+      <section class="history-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Historical measurements</p>
+            <h2>Connection history</h2>
+          </div>
+          <div class="range-control" role="group" aria-label="History range">
+            <button class="active" type="button" data-range="24h">
+              24 hours</button
+            ><button type="button" data-range="7d">7 days</button
+            ><button type="button" data-range="30d">30 days</button>
+          </div>
+        </div>
+
+        <div id="history-error" class="inline-error" hidden></div>
+        <div class="chart-group-title">
+          <span>Speed</span><small>Megabits per second</small>
+        </div>
+        <article class="chart-card">
+          <div class="chart-head">
+            <div>
+              <h3>
+                Throughput history
+                <span id="throughput-count" class="point-count"></span>
+              </h3>
+              <p>Every download and upload result in the selected range</p>
+            </div>
+            <div class="chart-actions">
+              <div class="legend">
+                <span class="legend-download">Download</span
+                ><span class="legend-upload">Upload</span>
+              </div>
+              <span class="zoom-buttons">
+                <button
+                  class="zoom-step"
+                  data-chart="throughput"
+                  data-factor="0.67"
+                  type="button"
+                  aria-label="Zoom throughput out"
+                >
+                  −
+                </button>
+                <button
+                  class="zoom-step"
+                  data-chart="throughput"
+                  data-factor="1.5"
+                  type="button"
+                  aria-label="Zoom throughput in"
+                >
+                  +
+                </button>
+                <button
+                  class="reset-zoom"
+                  data-chart="throughput"
+                  type="button"
+                  disabled
+                >
+                  Reset
+                </button>
+              </span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas
+              id="throughput-chart"
+              aria-label="Download and upload history chart"
+            ></canvas>
+            <div id="throughput-empty" class="empty-state" hidden>
+              <span>⌁</span><strong>No throughput results yet</strong
+              ><small>Run a full diagnostic to establish a baseline.</small>
+            </div>
+          </div>
+        </article>
+        <div class="chart-group-title">
+          <span>Responsiveness</span
+          ><small>Latency measurements in milliseconds</small>
+        </div>
+        <div class="chart-grid">
+          <article class="chart-card">
+            <div class="chart-head">
+              <div>
+                <h3>
+                  Latency under load
+                  <span id="latency-count" class="point-count"></span>
+                </h3>
+                <p>Idle versus download/upload loaded latency</p>
+              </div>
+              <div class="chart-actions">
+                <div class="legend">
+                  <span class="legend-latency">Idle</span
+                  ><span class="legend-download">Download loaded</span
+                  ><span class="legend-upload">Upload loaded</span>
+                </div>
+                <span class="zoom-buttons">
+                  <button
+                    class="zoom-step"
+                    data-chart="latency"
+                    data-factor="0.67"
+                    type="button"
+                    aria-label="Zoom latency out"
+                  >
+                    −
+                  </button>
+                  <button
+                    class="zoom-step"
+                    data-chart="latency"
+                    data-factor="1.5"
+                    type="button"
+                    aria-label="Zoom latency in"
+                  >
+                    +
+                  </button>
+                  <button
+                    class="reset-zoom"
+                    data-chart="latency"
+                    type="button"
+                    disabled
+                  >
+                    Reset
+                  </button>
+                </span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas
+                id="latency-chart"
+                aria-label="Idle and loaded latency history chart"
+              ></canvas>
+              <div id="latency-empty" class="empty-state" hidden>
+                <span>⌁</span><strong>No latency results yet</strong
+                ><small>Select latency in a manual diagnostic.</small>
+              </div>
+            </div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-head">
+              <div>
+                <h3>
+                  Bufferbloat
+                  <span id="bufferbloat-count" class="point-count"></span>
+                </h3>
+                <p>Added latency while download/upload is active</p>
+              </div>
+              <div class="chart-actions">
+                <div class="legend">
+                  <span class="legend-download">Download</span
+                  ><span class="legend-upload">Upload</span>
+                </div>
+                <span class="zoom-buttons">
+                  <button
+                    class="zoom-step"
+                    data-chart="bufferbloat"
+                    data-factor="0.67"
+                    type="button"
+                    aria-label="Zoom bufferbloat out"
+                  >
+                    −
+                  </button>
+                  <button
+                    class="zoom-step"
+                    data-chart="bufferbloat"
+                    data-factor="1.5"
+                    type="button"
+                    aria-label="Zoom bufferbloat in"
+                  >
+                    +
+                  </button>
+                  <button
+                    class="reset-zoom"
+                    data-chart="bufferbloat"
+                    type="button"
+                    disabled
+                  >
+                    Reset
+                  </button>
+                </span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas
+                id="bufferbloat-chart"
+                aria-label="Download and upload bufferbloat history chart"
+              ></canvas>
+              <div id="bufferbloat-empty" class="empty-state" hidden>
+                <span>↝</span><strong>No bufferbloat results yet</strong
+                ><small>Run latency with download or upload.</small>
+              </div>
+            </div>
+          </article>
+        </div>
+        <div class="chart-group-title">
+          <span>Stability</span
+          ><small>Separated scales avoid misleading normalization</small>
+        </div>
+        <div class="chart-grid">
+          <article class="chart-card">
+            <div class="chart-head">
+              <div>
+                <h3>
+                  Jitter <span id="jitter-count" class="point-count"></span>
+                </h3>
+                <p>Variation between idle HTTP latency samples</p>
+              </div>
+              <div class="chart-actions">
+                <div class="legend">
+                  <span class="legend-jitter">Jitter</span>
+                </div>
+                <span class="zoom-buttons">
+                  <button
+                    class="zoom-step"
+                    data-chart="jitter"
+                    data-factor="0.67"
+                    type="button"
+                    aria-label="Zoom jitter out"
+                  >
+                    −
+                  </button>
+                  <button
+                    class="zoom-step"
+                    data-chart="jitter"
+                    data-factor="1.5"
+                    type="button"
+                    aria-label="Zoom jitter in"
+                  >
+                    +
+                  </button>
+                  <button
+                    class="reset-zoom"
+                    data-chart="jitter"
+                    type="button"
+                    disabled
+                  >
+                    Reset
+                  </button>
+                </span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas
+                id="jitter-chart"
+                aria-label="Jitter history chart"
+              ></canvas>
+              <div id="jitter-empty" class="empty-state" hidden>
+                <span>≈</span><strong>No jitter results yet</strong
+                ><small
+                  >At least two successful latency samples are required.</small
+                >
+              </div>
+            </div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-head">
+              <div>
+                <h3>
+                  Packet loss <span id="loss-count" class="point-count"></span>
+                </h3>
+                <p>Experimental UDP loss percentage</p>
+              </div>
+              <div class="chart-actions">
+                <div class="legend">
+                  <span class="legend-loss">Packet loss</span>
+                </div>
+                <span class="zoom-buttons">
+                  <button
+                    class="zoom-step"
+                    data-chart="loss"
+                    data-factor="0.67"
+                    type="button"
+                    aria-label="Zoom packet loss out"
+                  >
+                    −
+                  </button>
+                  <button
+                    class="zoom-step"
+                    data-chart="loss"
+                    data-factor="1.5"
+                    type="button"
+                    aria-label="Zoom packet loss in"
+                  >
+                    +
+                  </button>
+                  <button
+                    class="reset-zoom"
+                    data-chart="loss"
+                    type="button"
+                    disabled
+                  >
+                    Reset
+                  </button>
+                </span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas
+                id="loss-chart"
+                aria-label="Packet loss history chart"
+              ></canvas>
+              <div id="loss-empty" class="empty-state" hidden>
+                <span>◇</span><strong>No packet loss results yet</strong
+                ><small>Select UDP packet loss in a manual diagnostic.</small>
+              </div>
+            </div>
+          </article>
+        </div>
+        <p class="chart-help">
+          Mouse wheel or − / + to zoom · drag to pan · Shift + drag to select a
+          zoom range · pinch on touch
+        </p>
+      </section>
+
+      <section class="recent-section">
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Diagnostic log</p>
+            <h2>Recent runs</h2>
+          </div>
+          <span id="run-count" class="run-count">0 runs</span>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Tests</th>
+                <th>Download</th>
+                <th>Upload</th>
+                <th>Latency</th>
+                <th>Jitter</th>
+                <th>Bufferbloat D/U</th>
+                <th>UDP loss</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="runs-body">
+              <tr>
+                <td colspan="9" class="table-empty">
+                  Loading diagnostic history…
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer>
+        <span>Hypernet Sentinel</span
+        ><span
+          >Measurements target Cloudflare infrastructure and do not identify
+          fault ownership.</span
+        ><a href="/healthz">System health</a>
+      </footer>
+    </main>
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <script src="/assets/chart.umd.min.js"></script>
+    <script src="/assets/hammer.min.js"></script>
+    <script src="/assets/chartjs-plugin-zoom.min.js"></script>
+    <script src="/scripts/app.js"></script>
+  </body>
+</html>

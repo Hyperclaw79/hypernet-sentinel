@@ -1,0 +1,89 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+  attestations: read
+
+concurrency:
+  group: hypernet-sentinel-publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Required / Publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag and main ancestry
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tags must use vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          }
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/sentinel-server/Cargo.toml | head -n1)"
+          test "${GITHUB_REF_NAME#v}" = "$version" || {
+            echo "Tag ${GITHUB_REF_NAME#v} does not match package version $version." >&2
+            exit 1
+          }
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Release tags must point at commits reachable from main." >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and verify immutable commit image
+        id: immutable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_base="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image="$image_base:sha-$GITHUB_SHA"
+          upstream_revision="$(tr -d '\r\n' < crates/measurement-core/UPSTREAM_REVISION)"
+          docker pull "$image"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "${{ steps.metadata.outputs.version }}"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$image")" = "${{ steps.metadata.outputs.source_url }}"
+          test "$(docker image inspect --format '{{index .Config.Labels "io.hypernet-sentinel.upstream-revision"}}' "$image")" = "$upstream_revision"
+          gh attestation verify "oci://$image" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build.yml" \
+            --source-digest "$GITHUB_SHA"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "image_base=$image_base" >> "$GITHUB_OUTPUT"
+          docker image inspect --format 'Verified immutable digest: {{index .RepoDigests 0}}' "$image"
+
+      - name: Promote tested image
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tag in "$GITHUB_REF_NAME" "${{ steps.metadata.outputs.version }}" latest; do
+            target="${{ steps.immutable.outputs.image_base }}:$tag"
+            docker tag "${{ steps.immutable.outputs.image }}" "$target"
+            docker push "$target"
+          done

@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Hypernet Sentinel (open dashboard)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\scripts\\run-local.ps1\"",
+      "cwd": "${workspaceFolder}",
+      "serverReadyAction": {
+        "pattern": "Hypernet Sentinel ready",
+        "uriFormat": "http://127.0.0.1:8080",
+        "action": "openExternally"
+      }
+    },
+    {
+      "name": "Run Hypernet Sentinel (hot reload)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\scripts\\run-hot-reload.ps1\"",
+      "cwd": "${workspaceFolder}",
+      "serverReadyAction": {
+        "pattern": "Hot reload:\\s+(http://127.0.0.1:3000)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    }
+  ]
+}

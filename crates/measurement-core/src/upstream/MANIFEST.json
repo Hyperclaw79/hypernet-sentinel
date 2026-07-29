@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/kavehtehrani/cloudflare-speed-cli",
+  "revision": "89c2b2afa0647bbf0d9a09e38c885c52e7234a70",
+  "files": {
+    "constants.rs": "0b4c8dc57e8086d9ab38acb43645ee15b468ae3cefb245c03e46595163f85303",
+    "engine/cert.rs": "3e7f050472006c432287db6dd2090a46cbef764eb0da1f6ea55c9de3ac7839b8",
+    "engine/cloudflare.rs": "03cb917064a895dd9425186f74698ad32c01cf7b08d34a4653e05cc5b52df28f",
+    "engine/dns.rs": "0254192644a839884e59a25ecf52c827154be2d0ee181cad8c1241bef9fab74d",
+    "engine/ip_comparison.rs": "6dd0aee0f941eddc508b769bf9398a46d874f602e44ae18455001d984cf7cf2e",
+    "engine/latency.rs": "447af808b2387daf06862946e3cac4e275d3015ef2b793b965b3274fe34cff38",
+    "engine/mod.rs": "b71e3f59662ae114224275e3fc92a605c0ea09374607b56ed0c8ac8713376015",
+    "engine/network_bind.rs": "253d56d8552a9e816bc47d6de4865d3786eda9b602b64ab1ac9ffa9d76590878",
+    "engine/throughput.rs": "1836755eb67e2401cd67927c4915eca3c8f0b6dac25a4856017ff6e63982e6d4",
+    "engine/tls.rs": "b5c1308832d0eba2c3f0b636acc0e96b5fd52083f450d2eac8c8008e0d6e19f4",
+    "engine/traceroute.rs": "5b08c561c57733fdd5285738acfa08d6005f206b1b618d528338a62b782a533d",
+    "engine/turn_udp.rs": "1c6be0cdcf870a1a341c76fd65d9367b2cc7551ccbafab56e0892868e86cf73c",
+    "metrics.rs": "62ff02c174a348ba03a75c477ba89f8429f554d12ffc1ebd1290df8bccf4bae9",
+    "model.rs": "e4e86ccfa75e2995c59a9242ab14f670b8d5a0806bcf0879e1a02adc3fff8a1a",
+    "stats.rs": "8236ecef8b07918e91782f7ccd2ff01070e9b625010fce6aeaf86d8b397a6c60"
+  }
+}

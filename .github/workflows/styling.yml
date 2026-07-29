@@ -1,0 +1,82 @@
+name: Styling
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hypernet-sentinel-styling-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  styling:
+    name: Advisory / Rustfmt and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        id: toolchain
+        if: ${{ steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Restore Cargo cache
+        id: cache
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        continue-on-error: true
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+
+      - name: Check formatting
+        id: rustfmt
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        id: clippy
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Report advisory results
+        if: always()
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
+          CACHE_OUTCOME: ${{ steps.cache.outcome }}
+          RUSTFMT_OUTCOME: ${{ steps.rustfmt.outcome }}
+          CLIPPY_OUTCOME: ${{ steps.clippy.outcome }}
+        run: |
+          warned=0
+          report() {
+            if [ "$2" != success ]; then
+              echo "::warning title=Advisory check incomplete::$1 finished with outcome '$2'."
+              warned=1
+            fi
+          }
+          report "Checkout" "$CHECKOUT_OUTCOME"
+          report "Rust toolchain" "$TOOLCHAIN_OUTCOME"
+          report "Cargo cache" "$CACHE_OUTCOME"
+          report "Rustfmt" "$RUSTFMT_OUTCOME"
+          report "Clippy" "$CLIPPY_OUTCOME"
+          if [ "$warned" -eq 0 ]; then
+            echo "All advisory checks passed."
+          fi
