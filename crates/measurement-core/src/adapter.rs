@@ -1,5 +1,5 @@
 use crate::engine::{cloudflare::CloudflareClient, EngineControl, TestEngine};
-use crate::model::{Phase, RunConfig, TestEvent, TurnInfo};
+use crate::model::{Phase, RunConfig, RunResult, TestEvent, TurnInfo};
 use anyhow::{anyhow, Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -185,7 +185,7 @@ impl Runner {
         let loaded_download = valid_latency(&result.loaded_latency_download);
         let loaded_upload = valid_latency(&result.loaded_latency_upload);
         if latency.is_none() && download.is_none() && upload.is_none() {
-            return Err(anyhow!("measurement returned no valid samples"));
+            return Err(self.invalid_measurement_error(&result).await);
         }
         Ok(MeasurementReport {
             kind: DiagnosticKind::Full,
@@ -267,7 +267,14 @@ impl Runner {
         }
         let valid = valid_latency(&latency);
         if valid.is_none() && udp.is_err() {
-            return Err(anyhow!("quality measurement returned no valid samples"));
+            let probe = connectivity_probe(&cfg, self.config.probe_timeout_ms).await;
+            return Err(anyhow!(
+                "quality measurement returned no valid samples: HTTP latency {}/{} probes; UDP failed: {:#}; verification probe {}",
+                latency.received,
+                latency.sent,
+                udp.as_ref().expect_err("UDP failure checked above"),
+                probe,
+            ));
         }
         let raw_result = serde_json::json!({
             "idle_latency": latency,
@@ -418,7 +425,16 @@ impl Runner {
             && upload_mbps.is_none()
             && packet_loss_pct.is_none()
         {
-            return Err(anyhow!("selected diagnostics returned no valid samples"));
+            let probe = connectivity_probe(&cfg, self.config.probe_timeout_ms).await;
+            return Err(anyhow!(
+                "selected diagnostics returned no valid samples: HTTP latency {}/{} probes; download {} bytes; upload {} bytes; UDP {}; verification probe {}",
+                idle.received,
+                idle.sent,
+                download.as_ref().map_or(0, |value| value.bytes),
+                upload.as_ref().map_or(0, |value| value.bytes),
+                udp_error.as_deref().unwrap_or("not selected or unavailable"),
+                probe,
+            ));
         }
         let raw_result = serde_json::json!({
             "selection": selection,
@@ -480,6 +496,42 @@ impl Runner {
             udp_packets: self.config.udp_packets,
         }
     }
+
+    async fn invalid_measurement_error(&self, result: &RunResult) -> anyhow::Error {
+        let udp = match (&result.experimental_udp, &result.udp_error) {
+            (Some(summary), _) => format!(
+                "{}/{} packets received",
+                summary.latency.received, summary.latency.sent
+            ),
+            (None, Some(error)) => format!("failed: {error}"),
+            (None, None) => "unavailable".to_string(),
+        };
+        let cfg = self.upstream_config();
+        let probe = connectivity_probe(&cfg, self.config.probe_timeout_ms).await;
+        anyhow!(
+            "measurement returned no valid samples: HTTP latency {}/{} probes; download {} bytes; upload {} bytes; UDP {}; verification probe {}",
+            result.idle_latency.received,
+            result.idle_latency.sent,
+            result.download.bytes,
+            result.upload.bytes,
+            udp,
+            probe,
+        )
+    }
+}
+
+async fn connectivity_probe(config: &RunConfig, timeout_ms: u64) -> String {
+    let client = match CloudflareClient::new(config, None).await {
+        Ok(client) => client,
+        Err(error) => return format!("could not initialize HTTP client: {error:#}"),
+    };
+    match client
+        .probe_latency_ms(None, timeout_ms.clamp(250, 3_000))
+        .await
+    {
+        Ok((latency_ms, _)) => format!("succeeded in {latency_ms:.1} ms after the run"),
+        Err(error) => format!("to {} failed: {error:#}", config.base_url),
+    }
 }
 
 fn valid_latency(summary: &crate::model::LatencySummary) -> Option<f64> {
@@ -537,6 +589,21 @@ mod tests {
         assert_eq!(added_latency(Some(24.5), Some(20.0)), Some(4.5));
         assert_eq!(added_latency(None, Some(20.0)), None);
         assert_eq!(added_latency(Some(20.0), None), None);
+    }
+
+    #[tokio::test]
+    async fn invalid_full_measurement_reports_phase_evidence() {
+        let runner = Runner::new(DiagnosticConfig {
+            base_url: "not a url".into(),
+            ..DiagnosticConfig::default()
+        });
+        let result = crate::model::empty_run_result();
+        let message = format!("{:#}", runner.invalid_measurement_error(&result).await);
+        assert!(message.contains("HTTP latency 0/0 probes"));
+        assert!(message.contains("download 0 bytes"));
+        assert!(message.contains("upload 0 bytes"));
+        assert!(message.contains("UDP unavailable"));
+        assert!(message.contains("could not initialize HTTP client: invalid base_url"));
     }
     #[test]
     fn selections_map_to_storage_kinds() {

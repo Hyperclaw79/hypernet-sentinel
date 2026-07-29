@@ -154,6 +154,7 @@ impl Coordinator {
         let result = match outcome {
             Ok(report) => self.db.complete(id.clone(), report, completed).await,
             Err(error) => {
+                tracing::error!(%id, error=%format!("{error:#}"), "diagnostic failed");
                 self.db
                     .fail(id.clone(), format!("{error:#}"), completed)
                     .await
