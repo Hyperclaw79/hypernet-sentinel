@@ -82,7 +82,9 @@ async fn main() -> Result<()> {
     let mcp_service = StreamableHttpService::new(
         move || Ok(mcp::SentinelMcp::new(mcp_state.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(shutdown.child_token()),
+        StreamableHttpServerConfig::default()
+            .disable_allowed_hosts()
+            .with_cancellation_token(shutdown.child_token()),
     );
     let app = Router::new()
         .route("/", get(api::index))
