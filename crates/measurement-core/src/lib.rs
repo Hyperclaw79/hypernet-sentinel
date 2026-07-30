@@ -16,7 +16,8 @@ pub(crate) mod stats;
 mod adapter;
 
 pub use adapter::{
-    DiagnosticConfig, DiagnosticKind, MeasurementReport, ProgressEvent, Runner, TestSelection,
+    CompletedTests, DiagnosticConfig, DiagnosticKind, DiagnosticOutcome, MeasurementReport,
+    PartialMeasurement, ProgressEvent, Runner, TestSelection,
 };
 
 pub const UPSTREAM_REVISION: &str = include_str!("../UPSTREAM_REVISION");

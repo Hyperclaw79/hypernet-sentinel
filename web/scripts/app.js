@@ -102,35 +102,29 @@ async function loadSummary() {
   $("#last-completed").textContent = summary.latest?.completed_at
     ? relative(summary.latest.completed_at)
     : "No results yet";
+  const alert = $("#connection-alert");
+  if (summary.latest?.outcome === "unavailable") {
+    $("#connection-alert-detail").textContent =
+      summary.latest.outcome_detail ||
+      "No valid samples were received from the configured measurement targets.";
+    alert.hidden = false;
+  } else {
+    alert.hidden = true;
+  }
 }
 
 function updateVisibleCount(name, chart) {
-  const labelCount = chart.data.labels.length;
-  const hasPointAt = (index) =>
-    chart.data.datasets.some((dataset) => {
-      const value = dataset.data[index];
-      return (
-        value !== null && value !== undefined && Number.isFinite(Number(value))
-      );
-    });
-  const total = Array.from({ length: labelCount }, (_, index) => index).filter(
-    hasPointAt,
-  ).length;
-  const minimum = Math.max(0, Math.ceil(Number(chart.scales.x.min)));
-  const maximum = Math.min(
-    labelCount - 1,
-    Math.floor(Number(chart.scales.x.max)),
-  );
-  let visible = 0;
-  for (let index = minimum; index <= maximum; index += 1) {
-    if (hasPointAt(index)) visible += 1;
-  }
+  const minimum = Number(chart.scales.x.min);
+  const maximum = Number(chart.scales.x.max);
+  const points = chart.data.datasets.flatMap((dataset) => dataset.data);
+  const measured = points.filter((point) => point.y != null && Number.isFinite(Number(point.y)));
+  const visible = measured.filter((point) => point.x >= minimum && point.x <= maximum).length;
   const label = $(`#${name}-count`);
   if (label) {
     label.textContent =
-      visible < total
-        ? `· showing ${visible} of ${total}`
-        : `· ${total} point${total === 1 ? "" : "s"}`;
+      visible < measured.length
+        ? `· showing ${visible} of ${measured.length}`
+        : `· ${measured.length} point${measured.length === 1 ? "" : "s"}`;
   }
 }
 
@@ -140,12 +134,13 @@ function setZoomed(name, chart) {
   updateVisibleCount(name, chart);
 }
 
-function chartOptions(name, yTitle, pointCount, suggestedMax) {
+function chartOptions(name, yTitle, suggestedMax) {
   return {
     responsive: true,
     maintainAspectRatio: false,
-    interaction: { mode: "index", intersect: false },
+    interaction: { mode: "nearest", intersect: false },
     animation: { duration: 250 },
+    parsing: false,
     plugins: {
       legend: { display: false },
       tooltip: {
@@ -156,6 +151,9 @@ function chartOptions(name, yTitle, pointCount, suggestedMax) {
         titleColor: "#dce9e4",
         bodyColor: "#a9bbb4",
         displayColors: true,
+        callbacks: {
+          title: (items) => (items.length ? localTime(items[0].parsed.x) : ""),
+        },
       },
       zoom: {
         limits: { x: { min: "original", max: "original", minRange: 1 } },
@@ -182,13 +180,14 @@ function chartOptions(name, yTitle, pointCount, suggestedMax) {
     },
     scales: {
       x: {
-        type: "category",
+        type: "linear",
         grid: { display: false },
         border: { display: false },
         ticks: {
           autoSkip: true,
           maxTicksLimit: name === "throughput" ? 12 : 6,
           maxRotation: 0,
+          callback: (value) => localTime(Number(value), true),
         },
       },
       y: {
@@ -218,14 +217,27 @@ function line(label, data, color, pointCount, fill = true) {
   };
 }
 
-function values(runs, field) {
-  return runs.map((run) => (run.status === "completed" ? run[field] : null));
+function selected(run, test) {
+  if (run.selected_tests) return Boolean(run.selected_tests[test]);
+  if (run.test_kind === "quality") return test === "latency" || test === "packet_loss";
+  return true;
+}
+
+function seriesPoints(runs, field, test) {
+  return runs
+    .filter((run) => selected(run, test))
+    .map((run) => ({
+      x: new Date(run.started_at).getTime(),
+      y:
+        run.status === "completed" && run.outcome !== "unavailable"
+          ? run[field]
+          : null,
+    }));
 }
 
 function createChart(
   name,
   canvas,
-  labels,
   datasets,
   yTitle,
   emptySelector,
@@ -234,7 +246,7 @@ function createChart(
 ) {
   const count = datasets.reduce(
     (maximum, dataset) =>
-      Math.max(maximum, dataset.data.filter((value) => value != null).length),
+      Math.max(maximum, dataset.data.filter((point) => point.y != null).length),
     0,
   );
   $(emptySelector).hidden = count > 0;
@@ -246,32 +258,20 @@ function createChart(
   if (reset) reset.disabled = true;
   state.charts[name] = new Chart($(canvas), {
     type: "line",
-    data: { labels, datasets },
-    options: chartOptions(name, yTitle, labels.length, suggestedMax),
+    data: { datasets },
+    options: chartOptions(name, yTitle, suggestedMax),
   });
 }
 
 function renderCharts(runs) {
   const chronological = [...runs].reverse();
-  const labels = chronological.map((run) => localTime(run.started_at, true));
   const pointCount = chronological.length;
   createChart(
     "throughput",
     "#throughput-chart",
-    labels,
     [
-      line(
-        "Download",
-        values(chronological, "download_mbps"),
-        colors.download,
-        pointCount,
-      ),
-      line(
-        "Upload",
-        values(chronological, "upload_mbps"),
-        colors.upload,
-        pointCount,
-      ),
+      line("Download", seriesPoints(chronological, "download_mbps", "download"), colors.download, pointCount),
+      line("Upload", seriesPoints(chronological, "upload_mbps", "upload"), colors.upload, pointCount),
     ],
     "Mbps",
     "#throughput-empty",
@@ -280,28 +280,10 @@ function renderCharts(runs) {
   createChart(
     "latency",
     "#latency-chart",
-    labels,
     [
-      line(
-        "Idle",
-        values(chronological, "latency_ms"),
-        colors.latency,
-        pointCount,
-      ),
-      line(
-        "Download loaded",
-        values(chronological, "loaded_latency_download_ms"),
-        colors.download,
-        pointCount,
-        false,
-      ),
-      line(
-        "Upload loaded",
-        values(chronological, "loaded_latency_upload_ms"),
-        colors.upload,
-        pointCount,
-        false,
-      ),
+      line("Idle", seriesPoints(chronological, "latency_ms", "latency"), colors.latency, pointCount),
+      line("Download loaded", seriesPoints(chronological, "loaded_latency_download_ms", "download"), colors.download, pointCount, false),
+      line("Upload loaded", seriesPoints(chronological, "loaded_latency_upload_ms", "upload"), colors.upload, pointCount, false),
     ],
     "Milliseconds",
     "#latency-empty",
@@ -310,20 +292,9 @@ function renderCharts(runs) {
   createChart(
     "bufferbloat",
     "#bufferbloat-chart",
-    labels,
     [
-      line(
-        "Download added latency",
-        values(chronological, "download_bufferbloat_ms"),
-        colors.download,
-        pointCount,
-      ),
-      line(
-        "Upload added latency",
-        values(chronological, "upload_bufferbloat_ms"),
-        colors.upload,
-        pointCount,
-      ),
+      line("Download added latency", seriesPoints(chronological, "download_bufferbloat_ms", "download"), colors.download, pointCount),
+      line("Upload added latency", seriesPoints(chronological, "upload_bufferbloat_ms", "upload"), colors.upload, pointCount),
     ],
     "Added latency (ms)",
     "#bufferbloat-empty",
@@ -332,15 +303,7 @@ function renderCharts(runs) {
   createChart(
     "jitter",
     "#jitter-chart",
-    labels,
-    [
-      line(
-        "Jitter",
-        values(chronological, "jitter_ms"),
-        colors.jitter,
-        pointCount,
-      ),
-    ],
+    [line("Jitter", seriesPoints(chronological, "jitter_ms", "latency"), colors.jitter, pointCount)],
     "Milliseconds",
     "#jitter-empty",
     "#jitter-count",
@@ -348,20 +311,79 @@ function renderCharts(runs) {
   createChart(
     "loss",
     "#loss-chart",
-    labels,
-    [
-      line(
-        "Packet loss",
-        values(chronological, "packet_loss_pct"),
-        colors.loss,
-        pointCount,
-      ),
-    ],
+    [line("Packet loss", seriesPoints(chronological, "packet_loss_pct", "packet_loss"), colors.loss, pointCount)],
     "Loss %",
     "#loss-empty",
     "#loss-count",
     1,
   );
+}
+
+function setLivePoint(chartName, datasetIndex, startedAt, value) {
+  if (value == null) return;
+  const chart = state.charts[chartName];
+  if (!chart) return;
+  const dataset = chart.data.datasets[datasetIndex];
+  const x = new Date(startedAt).getTime();
+  dataset.data = dataset.data.filter((point) => !point.live);
+  dataset.data.push({ x, y: value, live: true });
+  dataset.data.sort((left, right) => left.x - right.x);
+  chart.update("none");
+}
+
+function renderPartial(active) {
+  const partial = active.partial || {};
+  const completed = partial.completed || {};
+  const cards = [
+    ["latency", "#metric-latency", ".metric-card.latency", partial.latency_ms, "ms", "latency", 0],
+    ["latency", "#metric-jitter", ".metric-card.jitter", partial.jitter_ms, "ms", "jitter", 0],
+    ["download", "#metric-download", ".metric-card.download", partial.download_mbps, "Mbps", "throughput", 0],
+    ["upload", "#metric-upload", ".metric-card.upload", partial.upload_mbps, "Mbps", "throughput", 1],
+    ["packet_loss", "#metric-loss", ".metric-card.loss", partial.packet_loss_pct, "%", "loss", 0],
+  ];
+  cards.forEach(([test, selector, cardSelector, value, unit, chart, dataset]) => {
+    if (!completed[test] || value == null) return;
+    metric(selector, value, unit, unit === "%" ? 2 : 1);
+    $(cardSelector)?.classList.add("current-run");
+    setLivePoint(chart, dataset, active.started_at, value);
+  });
+  if (completed.download && partial.loaded_latency_download_ms != null) {
+    setLivePoint(
+      "latency",
+      1,
+      active.started_at,
+      partial.loaded_latency_download_ms,
+    );
+  }
+  if (completed.upload && partial.loaded_latency_upload_ms != null) {
+    setLivePoint(
+      "latency",
+      2,
+      active.started_at,
+      partial.loaded_latency_upload_ms,
+    );
+  }
+  if (completed.download && partial.download_bufferbloat_ms != null) {
+    metric("#metric-bufferbloat", partial.download_bufferbloat_ms, "ms", 1, true);
+    $(".metric-card.bufferbloat")?.classList.add("current-run");
+    setLivePoint("bufferbloat", 0, active.started_at, partial.download_bufferbloat_ms);
+  }
+  if (completed.upload && partial.upload_bufferbloat_ms != null) {
+    const current = Math.max(
+      partial.download_bufferbloat_ms ?? 0,
+      partial.upload_bufferbloat_ms,
+    );
+    metric("#metric-bufferbloat", current, "ms", 1, true);
+    $(".metric-card.bufferbloat")?.classList.add("current-run");
+    setLivePoint("bufferbloat", 1, active.started_at, partial.upload_bufferbloat_ms);
+  }
+  if (completed.download || completed.upload) {
+    const down = partial.download_bufferbloat_ms;
+    const up = partial.upload_bufferbloat_ms;
+    $("#bufferbloat-detail").textContent = `download ${
+      down == null ? "—" : `+${number(down)} ms`
+    } · upload ${up == null ? "—" : `+${number(up)} ms`}`;
+  }
 }
 
 function selectionLabel(run) {
@@ -406,11 +428,13 @@ function renderTable(runs) {
     <td>${
       run.packet_loss_pct == null ? "—" : `${number(run.packet_loss_pct, 2)}%`
     }</td>
-    <td><span class="status-badge ${run.status}">${run.status}</span>${
-      run.error
+    <td><span class="status-badge ${
+      run.outcome === "unavailable" ? "unavailable" : run.status
+    }">${run.outcome === "unavailable" ? "unavailable" : run.status}</span>${
+      run.error || run.outcome_detail
         ? `<span class="error-detail" title="${escapeHtml(
-            run.error,
-          )}">${escapeHtml(run.error)}</span>`
+            run.error || run.outcome_detail,
+          )}">${escapeHtml(run.error || run.outcome_detail)}</span>`
         : ""
     }</td>
   </tr>`,
@@ -464,7 +488,11 @@ async function loadCurrent() {
     if (current.running && current.active_test) {
       state.started = current.active_test.started_at;
       $("#running-phase").textContent = humanPhase(current.active_test.phase);
+      renderPartial(current.active_test);
     } else if (state.started) {
+      $$(".metric-card.current-run").forEach((card) =>
+        card.classList.remove("current-run"),
+      );
       state.started = null;
       await Promise.all([loadSummary(), loadHistory()]);
     }

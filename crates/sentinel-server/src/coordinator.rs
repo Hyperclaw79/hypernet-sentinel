@@ -4,7 +4,9 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use measurement_core::{DiagnosticKind, MeasurementReport, ProgressEvent, Runner, TestSelection};
+use measurement_core::{
+    DiagnosticKind, MeasurementReport, PartialMeasurement, ProgressEvent, Runner, TestSelection,
+};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -108,6 +110,7 @@ impl Coordinator {
             started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             phase: "starting".into(),
             selected_tests: selection,
+            partial: PartialMeasurement::default(),
         };
         if let Err(error) = self
             .db
@@ -168,12 +171,16 @@ impl Coordinator {
     }
 
     async fn update_progress(&self, event: ProgressEvent) {
-        let phase = match event {
-            ProgressEvent::Phase { name } => name,
-            ProgressEvent::PacketLoss { sent, total, .. } => format!("packet_loss {sent}/{total}"),
+        let mut active = self.active.write().await;
+        let Some(active) = active.as_mut() else {
+            return;
         };
-        if let Some(active) = self.active.write().await.as_mut() {
-            active.phase = phase;
+        match event {
+            ProgressEvent::Phase { name } => active.phase = name,
+            ProgressEvent::PacketLoss { sent, total, .. } => {
+                active.phase = format!("packet_loss {sent}/{total}");
+            }
+            ProgressEvent::Partial { measurement } => active.partial = measurement,
         }
     }
 
