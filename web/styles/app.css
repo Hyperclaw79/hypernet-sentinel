@@ -1025,3 +1025,34 @@ table {
     flex-direction: column;
   }
 }
+
+
+.connection-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--amber) 42%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--amber) 9%, var(--panel));
+}
+.connection-alert[hidden] {
+  display: none;
+}
+.connection-alert strong {
+  color: var(--amber);
+  white-space: nowrap;
+}
+.connection-alert span {
+  color: #c7d5d0;
+  font-size: 11px;
+}
+.status-badge.unavailable {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+.metric-card.current-run {
+  outline: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}

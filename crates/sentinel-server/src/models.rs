@@ -1,4 +1,4 @@
-use measurement_core::{DiagnosticKind, TestSelection};
+use measurement_core::{DiagnosticKind, DiagnosticOutcome, PartialMeasurement, TestSelection};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,6 +7,8 @@ pub struct TestRun {
     pub test_kind: DiagnosticKind,
     pub trigger: String,
     pub status: String,
+    pub outcome: Option<DiagnosticOutcome>,
+    pub outcome_detail: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
     pub measurement_target: Option<String>,
@@ -34,6 +36,7 @@ pub struct ActiveTest {
     pub started_at: String,
     pub phase: String,
     pub selected_tests: TestSelection,
+    pub partial: PartialMeasurement,
 }
 
 #[derive(Debug, Clone, Serialize)]

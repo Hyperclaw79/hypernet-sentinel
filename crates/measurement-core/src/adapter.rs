@@ -16,6 +16,35 @@ pub enum DiagnosticKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticOutcome {
+    Measured,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompletedTests {
+    pub latency: bool,
+    pub download: bool,
+    pub upload: bool,
+    pub packet_loss: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PartialMeasurement {
+    pub latency_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub packet_loss_pct: Option<f64>,
+    pub download_mbps: Option<f64>,
+    pub upload_mbps: Option<f64>,
+    pub loaded_latency_download_ms: Option<f64>,
+    pub loaded_latency_upload_ms: Option<f64>,
+    pub download_bufferbloat_ms: Option<f64>,
+    pub upload_bufferbloat_ms: Option<f64>,
+    pub completed: CompletedTests,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestSelection {
     pub latency: bool,
     pub download: bool,
@@ -95,11 +124,16 @@ pub enum ProgressEvent {
         received: u64,
         total: u64,
     },
+    Partial {
+        measurement: PartialMeasurement,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeasurementReport {
     pub kind: DiagnosticKind,
+    pub outcome: DiagnosticOutcome,
+    pub outcome_detail: Option<String>,
     pub measurement_target: String,
     pub latency_ms: Option<f64>,
     pub jitter_ms: Option<f64>,
@@ -146,13 +180,7 @@ impl Runner {
         if selection.is_empty() {
             return Err(anyhow!("at least one diagnostic must be selected"));
         }
-        if selection == TestSelection::default() {
-            self.run_full(cancel, progress).await
-        } else if selection == TestSelection::quality() {
-            self.run_quality(cancel, progress).await
-        } else {
-            self.run_custom(selection, cancel, progress).await
-        }
+        self.run_custom(selection, cancel, progress).await
     }
 
     async fn run_full(
@@ -189,6 +217,8 @@ impl Runner {
         }
         Ok(MeasurementReport {
             kind: DiagnosticKind::Full,
+            outcome: DiagnosticOutcome::Measured,
+            outcome_detail: None,
             measurement_target: "Cloudflare speed test edge; UDP loss to turn.cloudflare.com:3478"
                 .into(),
             latency_ms: latency,
@@ -283,6 +313,8 @@ impl Runner {
         });
         Ok(MeasurementReport {
             kind: DiagnosticKind::Quality,
+            outcome: DiagnosticOutcome::Measured,
+            outcome_detail: None,
             measurement_target:
                 "HTTP latency to speed.cloudflare.com; UDP loss to turn.cloudflare.com:3478".into(),
             latency_ms: valid,
@@ -328,7 +360,8 @@ impl Runner {
         let mut loaded_download = crate::model::LatencySummary::default();
         let mut loaded_upload = crate::model::LatencySummary::default();
         let mut udp = None;
-        let mut udp_error = None;
+        let mut phase_errors = serde_json::Map::new();
+        let mut partial = PartialMeasurement::default();
 
         if selection.latency {
             let _ = progress
@@ -336,7 +369,7 @@ impl Runner {
                     name: "idle_latency".into(),
                 })
                 .await;
-            idle = crate::engine::latency::run_latency_probes(
+            match crate::engine::latency::run_latency_probes(
                 &client,
                 Phase::IdleLatency,
                 None,
@@ -347,52 +380,102 @@ impl Runner {
                 paused.clone(),
                 cancelled.clone(),
             )
-            .await?;
+            .await
+            {
+                Ok(summary) => idle = summary,
+                Err(error) => {
+                    phase_errors.insert("latency".into(), format!("{error:#}").into());
+                }
+            }
+            partial.latency_ms = valid_latency(&idle);
+            partial.jitter_ms = idle.jitter_ms.filter(|_| idle.received >= 2);
+            partial.completed.latency = true;
+            emit_partial(&progress, &partial).await;
         }
+
         if selection.download {
             let _ = progress
                 .send(ProgressEvent::Phase {
                     name: "download".into(),
                 })
                 .await;
-            let measured = crate::engine::throughput::run_download_with_loaded_latency(
+            match crate::engine::throughput::run_download_with_loaded_latency(
                 &client,
                 &cfg,
                 &event_tx,
                 paused.clone(),
                 cancelled.clone(),
             )
-            .await?;
-            download = (measured.0.bytes > 0).then_some(measured.0);
-            loaded_download = measured.1;
+            .await
+            {
+                Ok((summary, loaded)) => {
+                    download = (summary.bytes > 0).then_some(summary);
+                    loaded_download = loaded;
+                }
+                Err(error) => {
+                    phase_errors.insert("download".into(), format!("{error:#}").into());
+                }
+            }
+            partial.download_mbps = download.as_ref().map(|value| value.mbps);
+            partial.loaded_latency_download_ms = valid_latency(&loaded_download);
+            partial.download_bufferbloat_ms =
+                added_latency(partial.loaded_latency_download_ms, partial.latency_ms);
+            partial.completed.download = true;
+            emit_partial(&progress, &partial).await;
         }
+
+        let turn_dns = if selection.packet_loss {
+            Some(tokio::spawn(async {
+                tokio::net::lookup_host(("turn.cloudflare.com", 3478_u16))
+                    .await
+                    .map(|items| items.collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }))
+        } else {
+            None
+        };
+
         if selection.upload {
             let _ = progress
                 .send(ProgressEvent::Phase {
                     name: "upload".into(),
                 })
                 .await;
-            let measured = crate::engine::throughput::run_upload_with_loaded_latency(
+            match crate::engine::throughput::run_upload_with_loaded_latency(
                 &client,
                 &cfg,
                 &event_tx,
                 paused.clone(),
                 cancelled.clone(),
             )
-            .await?;
-            upload = (measured.0.bytes > 0).then_some(measured.0);
-            loaded_upload = measured.1;
+            .await
+            {
+                Ok((summary, loaded)) => {
+                    upload = (summary.bytes > 0).then_some(summary);
+                    loaded_upload = loaded;
+                }
+                Err(error) => {
+                    phase_errors.insert("upload".into(), format!("{error:#}").into());
+                }
+            }
+            partial.upload_mbps = upload.as_ref().map(|value| value.mbps);
+            partial.loaded_latency_upload_ms = valid_latency(&loaded_upload);
+            partial.upload_bufferbloat_ms =
+                added_latency(partial.loaded_latency_upload_ms, partial.latency_ms);
+            partial.completed.upload = true;
+            emit_partial(&progress, &partial).await;
         }
+
         if selection.packet_loss {
             let _ = progress
                 .send(ProgressEvent::Phase {
                     name: "packet_loss".into(),
                 })
                 .await;
-            let addresses = tokio::net::lookup_host(("turn.cloudflare.com", 3478_u16))
-                .await
-                .map(|items| items.collect())
-                .unwrap_or_default();
+            let addresses = match turn_dns {
+                Some(handle) => handle.await.unwrap_or_default(),
+                None => Vec::new(),
+            };
             let turn = TurnInfo {
                 urls: vec!["stun:turn.cloudflare.com:3478".into()],
                 username: None,
@@ -404,9 +487,15 @@ impl Runner {
             .await
             {
                 Ok(value) => udp = Some(value),
-                Err(error) => udp_error = Some(format!("{error:#}")),
+                Err(error) => {
+                    phase_errors.insert("packet_loss".into(), format!("{error:#}").into());
+                }
             }
+            partial.packet_loss_pct = udp.as_ref().map(|value| value.latency.loss * 100.0);
+            partial.completed.packet_loss = true;
+            emit_partial(&progress, &partial).await;
         }
+
         drop(event_tx);
         let _ = event_forwarder.await;
         cancel_watch.abort();
@@ -414,28 +503,23 @@ impl Runner {
             return Err(anyhow!("diagnostic cancelled"));
         }
 
-        let latency = valid_latency(&idle);
-        let loaded_download_ms = valid_latency(&loaded_download);
-        let loaded_upload_ms = valid_latency(&loaded_upload);
-        let download_mbps = download.as_ref().map(|value| value.mbps);
-        let upload_mbps = upload.as_ref().map(|value| value.mbps);
-        let packet_loss_pct = udp.as_ref().map(|value| value.latency.loss * 100.0);
-        if latency.is_none()
-            && download_mbps.is_none()
-            && upload_mbps.is_none()
-            && packet_loss_pct.is_none()
-        {
+        let measured = partial.latency_ms.is_some()
+            || partial.download_mbps.is_some()
+            || partial.upload_mbps.is_some()
+            || partial.packet_loss_pct.is_some();
+        let (outcome, outcome_detail) = if measured {
+            (DiagnosticOutcome::Measured, None)
+        } else {
             let probe = connectivity_probe(&cfg, self.config.probe_timeout_ms).await;
-            return Err(anyhow!(
-                "selected diagnostics returned no valid samples: HTTP latency {}/{} probes; download {} bytes; upload {} bytes; UDP {}; verification probe {}",
-                idle.received,
-                idle.sent,
-                download.as_ref().map_or(0, |value| value.bytes),
-                upload.as_ref().map_or(0, |value| value.bytes),
-                udp_error.as_deref().unwrap_or("not selected or unavailable"),
-                probe,
-            ));
-        }
+            phase_errors.insert("verification".into(), probe.clone().into());
+            (
+                DiagnosticOutcome::Unavailable,
+                Some(format!(
+                    "No valid samples were received from the configured measurement targets; {probe}"
+                )),
+            )
+        };
+
         let raw_result = serde_json::json!({
             "selection": selection,
             "idle_latency": idle,
@@ -444,21 +528,23 @@ impl Runner {
             "loaded_latency_download": loaded_download,
             "loaded_latency_upload": loaded_upload,
             "experimental_udp": udp,
-            "udp_error": udp_error,
+            "phase_errors": phase_errors,
         });
         Ok(MeasurementReport {
             kind: selection.kind(),
+            outcome,
+            outcome_detail,
             measurement_target: "Selected diagnostics against Cloudflare speed test and TURN edges"
                 .into(),
-            latency_ms: latency,
-            jitter_ms: idle.jitter_ms.filter(|_| idle.received >= 2),
-            packet_loss_pct,
-            download_mbps,
-            upload_mbps,
-            loaded_latency_download_ms: loaded_download_ms,
-            loaded_latency_upload_ms: loaded_upload_ms,
-            download_bufferbloat_ms: added_latency(loaded_download_ms, latency),
-            upload_bufferbloat_ms: added_latency(loaded_upload_ms, latency),
+            latency_ms: partial.latency_ms,
+            jitter_ms: partial.jitter_ms,
+            packet_loss_pct: partial.packet_loss_pct,
+            download_mbps: partial.download_mbps,
+            upload_mbps: partial.upload_mbps,
+            loaded_latency_download_ms: partial.loaded_latency_download_ms,
+            loaded_latency_upload_ms: partial.loaded_latency_upload_ms,
+            download_bufferbloat_ms: partial.download_bufferbloat_ms,
+            upload_bufferbloat_ms: partial.upload_bufferbloat_ms,
             selected_tests: selection,
             raw_result,
         })
@@ -532,6 +618,14 @@ async fn connectivity_probe(config: &RunConfig, timeout_ms: u64) -> String {
         Ok((latency_ms, _)) => format!("succeeded in {latency_ms:.1} ms after the run"),
         Err(error) => format!("to {} failed: {error:#}", config.base_url),
     }
+}
+
+async fn emit_partial(sender: &mpsc::Sender<ProgressEvent>, partial: &PartialMeasurement) {
+    let _ = sender
+        .send(ProgressEvent::Partial {
+            measurement: partial.clone(),
+        })
+        .await;
 }
 
 fn valid_latency(summary: &crate::model::LatencySummary) -> Option<f64> {
