@@ -1,14 +1,14 @@
 use crate::{coordinator::StartError, AppState};
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use measurement_core::TestSelection;
 use serde::Deserialize;
 #[cfg(debug_assertions)]
-use std::path::Path;
+use std::path::Path as FilePath;
 
 #[derive(Deserialize)]
 pub struct ResultsQuery {
@@ -101,6 +101,25 @@ pub async fn index() -> Response {
     )
     .await
 }
+pub async fn manifest() -> Response {
+    web_asset(
+        "manifest.webmanifest",
+        include_str!("../../../web/manifest.webmanifest"),
+        "application/manifest+json; charset=utf-8",
+    )
+    .await
+}
+pub async fn icon(Path(name): Path<String>) -> Response {
+    let bytes: &'static [u8] = match name.as_str() {
+        "icon-192.png" => include_bytes!("../../../web/icons/icon-192.png"),
+        "icon-512.png" => include_bytes!("../../../web/icons/icon-512.png"),
+        "icon-maskable-192.png" => include_bytes!("../../../web/icons/icon-maskable-192.png"),
+        "icon-maskable-512.png" => include_bytes!("../../../web/icons/icon-maskable-512.png"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    ([(header::CONTENT_TYPE, "image/png")], bytes).into_response()
+}
 pub async fn styles() -> Response {
     web_asset(
         "styles/app.css",
@@ -151,7 +170,7 @@ async fn web_asset(
     let _ = relative_path;
     #[cfg(debug_assertions)]
     let body = if let Some(root) = std::env::var_os("SENTINEL_WEB_DIR") {
-        match tokio::fs::read_to_string(Path::new(&root).join(relative_path)).await {
+        match tokio::fs::read_to_string(FilePath::new(&root).join(relative_path)).await {
             Ok(contents) => contents,
             Err(error) => {
                 return internal(

@@ -88,6 +88,8 @@ async fn main() -> Result<()> {
     );
     let app = Router::new()
         .route("/", get(api::index))
+        .route("/manifest.webmanifest", get(api::manifest))
+        .route("/icons/{name}", get(api::icon))
         .route("/assets/chart.umd.min.js", get(api::chart))
         .route("/assets/hammer.min.js", get(api::hammer))
         .route("/assets/chartjs-plugin-zoom.min.js", get(api::chart_zoom))
